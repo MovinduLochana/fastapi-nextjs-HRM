@@ -1,0 +1,41 @@
+# Stage 1: Install dependencies based on the preferred package manager
+FROM dhi.io/node:24-alpine3.22-dev AS deps
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+
+# Copy lockfiles to optimize build cache
+COPY package.json package-lock.json* ./
+RUN npm ci --prefer-offline --no-audit --progress=false
+
+# Stage 2: Rebuild the source code only when needed
+FROM dhi.io/node:24-alpine3.22-dev AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+# Environment variables must be present at build time for client-side injection
+
+RUN npm run build
+
+# Stage 3: Production runner
+FROM dhi.io/node:24-alpine3.22-dev AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+# Create a non-root user for security compliance
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+# Automatically leverage output traces to reduce image size
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
+
+EXPOSE 3000
+
+CMD ["node", "server.js"]
